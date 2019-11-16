@@ -1,0 +1,97 @@
+Resources:
+    latestImageFunctionRole:
+        Type: AWS::IAM::Role
+        Properties:
+          AssumeRolePolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action: sts:AssumeRole
+                Effect: Allow
+                Principal:
+                  Service: !Sub lambda.${AWS::URLSuffix}
+          ManagedPolicyArns:
+            - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+          Policies:
+            - PolicyName: DescribeImages
+              PolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                  - Action: ec2:DescribeImages
+                    Effect: Allow
+                    Resource: '*'
+    latestImageFunction:
+      Type: AWS::Lambda::Function
+      Properties:
+        Runtime: python3.6
+        Handler: index.handler
+        Role: !GetAtt latestImageFunctionRole.Arn
+        Timeout: 30
+        Code:
+          ZipFile: |
+            import boto3
+
+            from botocore.vendored import requests
+            import json
+
+            # Identical to cfnresponse in awslabs GitHub repo. Embedded it here because it cannot be imported
+            # (e.g. import cfnresponse), but the source code is compatible with Python 3.
+            def send(event, context, responseStatus, responseData, physicalResourceId=None, noEcho=False):
+                responseUrl = event['ResponseURL']
+
+                print(responseUrl)
+
+                responseBody = {}
+                responseBody['Status'] = responseStatus
+                responseBody['Reason'] = 'See the details in CloudWatch Log Stream: ' + context.log_stream_name
+                responseBody['PhysicalResourceId'] = physicalResourceId or context.log_stream_name
+                responseBody['StackId'] = event['StackId']
+                responseBody['RequestId'] = event['RequestId']
+                responseBody['LogicalResourceId'] = event['LogicalResourceId']
+                responseBody['NoEcho'] = noEcho
+                responseBody['Data'] = responseData
+
+                json_responseBody = json.dumps(responseBody)
+
+                print("Response body:\n" + json_responseBody)
+
+                headers = {
+                    'content-type' : '',
+                    'content-length' : str(len(json_responseBody))
+                }
+
+                try:
+                    response = requests.put(responseUrl,
+                                            data=json_responseBody,
+                                            headers=headers)
+                    print("Status code: " + response.reason)
+                except Exception as e:
+                    print("send(..) failed executing requests.put(..): " + str(e))
+
+            def handler(event, context):
+              if event['RequestType'] in ['Create', 'Update']:
+                try:
+                    response = boto3.client('ec2').describe_images(
+                        Filters=[
+                            {'Name': 'name', 'Values': [event['ResourceProperties']['Name']]}
+                        ]
+                    )
+                
+                    amis = sorted(
+                        response['Images'],
+                        key=lambda x: x['CreationDate'],
+                        reverse=True
+                    )
+
+                    latestAmiId = amis[0]['ImageId']
+                    send(event, context, "SUCCESS", {}, latestAmiId)
+                except Exception as error:
+                    print(error)
+                    send(event, context, "FAILED", {})
+              else:
+                # Send null success when deletion events occur. If we send FAILED,
+                # deletion will fail because the custom resource reported a 
+                # failure. If we send nothing, deletion will hang for one hour.
+                send(event, context, "SUCCESS", {})
+Outputs:
+  LambdaServiceToken:
+    Value: !GetAtt latestImageFunction.Arn

@@ -1,0 +1,24 @@
+Parameters:
+  AmazonMachineImageName:
+    Type: String
+    Description: Include wildcard if substring. (e.g. 'RHEL-8*')
+  BucketName:
+    Type: String
+    Description: S3 bucket hosting the get-latest-ami.yml nested template.
+Resources:
+  latestAmiTemplate:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://${BucketName}.s3.${AWS::URLSuffix}/get-latest-ami.yml
+  # Invoked here, and can be invoked multiple times.
+  latestAmi:
+    DependsOn: latestAmiTemplate
+    Type: Custom::latestAmi
+    Properties:
+      ServiceToken: !GetAtt latestAmiTemplate.Outputs.LambdaServiceToken
+      Name: !Ref AmazonMachineImageName
+# This value can be inputted to resources (e.g. AWS::EC2::Instance),
+# Included as an output value for simplicity, and to not provision resources.
+Outputs:
+  amiId:
+    Value: !Ref latestAmi
